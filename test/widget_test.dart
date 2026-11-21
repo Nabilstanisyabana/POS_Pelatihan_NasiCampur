@@ -1,10 +1,31 @@
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:provider/provider.dart';
+import 'package:realtime_communication/features/cashier/cart_panel.dart';
 import 'package:realtime_communication/core/utils/formatters.dart';
 import 'package:realtime_communication/core/utils/order_code.dart';
 import 'package:realtime_communication/models/menu_item.dart';
 import 'package:realtime_communication/models/order.dart';
+import 'package:realtime_communication/state/cart_controller.dart';
 
 void main() {
+  testWidgets('cart panel in sheet renders without clipping assertion', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      ChangeNotifierProvider(
+        create: (_) => CartController(),
+        child: const MaterialApp(
+          home: Scaffold(
+            body: SizedBox(height: 500, child: CartPanel(inSheet: true)),
+          ),
+        ),
+      ),
+    );
+
+    expect(tester.takeException(), isNull);
+  });
+
   group('format rupiah', () {
     test('memformat ribuan dengan titik', () {
       expect(rupiah(0), 'Rp 0');
@@ -77,8 +98,8 @@ void main() {
     });
   });
 
-  test('kode order mengikuti format INV', () {
+  test('kode order mengikuti format invoice MiomiPay', () {
     final code = generateOrderCode(DateTime(2026, 1, 2, 10, 15, 30, 45));
-    expect(code, startsWith('INV-260102-101530'));
+    expect(code, 'MP-INV-20260102101530045000');
   });
 }

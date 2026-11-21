@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -18,6 +19,7 @@ import '../shared/receipt_sheet.dart';
 /// Layar Pembayaran MiomiPay & Layar Sukses sesuai PRD Section 6 (Layar 7 & 8), 8, 16, 17, 18, 19:
 /// - Layar penuh tanpa bottom navigation (Section 17)
 /// - Menampilkan detail tagihan, QR/link, status, countdown (Layar 7)
+/// - Integrasi Sandbox Simulator MiomiPay (Buka langsung / Salin Snap Token)
 /// - Status real-time: Menunggu, Berhasil, Gagal/Kedaluwarsa (POS-06)
 /// - Layar sukses dengan ringkasan & tombol "Pesanan Baru" (POS-08)
 class PaymentPage extends StatefulWidget {
@@ -68,7 +70,7 @@ class _PaymentPageState extends State<PaymentPage> {
     });
 
     if (!widget.intent.isSimulated) {
-      _pollTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+      _pollTimer = Timer.periodic(const Duration(seconds: 3), (_) {
         _checkStatus(silent: true);
       });
     }
@@ -104,7 +106,8 @@ class _PaymentPageState extends State<PaymentPage> {
         await _completePayment();
         return;
       }
-      if (normalized == PaymentStatus.failed || normalized == PaymentStatus.expired) {
+      if (normalized == PaymentStatus.failed ||
+          normalized == PaymentStatus.expired) {
         setState(() {
           _failed = true;
           _statusMessage = 'Pembayaran gagal atau sudah kedaluwarsa.';
@@ -244,6 +247,39 @@ class _PaymentPageState extends State<PaymentPage> {
     await launchUrl(uri, mode: LaunchMode.externalApplication);
   }
 
+  Future<void> _openSimulator() async {
+    final url = widget.intent.simulatorUrl ??
+        'https://pg.miomidev.com/sandbox/simulator';
+    final uri = Uri.tryParse(url);
+    if (uri == null) return;
+    await launchUrl(uri, mode: LaunchMode.externalApplication);
+  }
+
+  Future<void> _copyText(String text, String label) async {
+    try {
+      await Clipboard.setData(ClipboardData(text: text));
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            content: Text('$label berhasil disalin.'),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            content: Text('Gagal menyalin $label: $error'),
+            backgroundColor: AppColors.error,
+          ),
+        );
+    }
+  }
+
   String get _countdown {
     final minutes = (_secondsLeft ~/ 60).toString().padLeft(2, '0');
     final seconds = (_secondsLeft % 60).toString().padLeft(2, '0');
@@ -260,6 +296,9 @@ class _PaymentPageState extends State<PaymentPage> {
             Navigator.of(context).popUntil((route) => route.isFirst),
       );
     }
+
+    final invoiceCode = widget.intent.invoiceNumber ?? widget.order.code;
+    final snapToken = widget.intent.snapToken;
 
     return PopScope(
       canPop: _paid || _allowPop,
@@ -284,6 +323,60 @@ class _PaymentPageState extends State<PaymentPage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
+                    // Peringatan jika koneksi API MiomiPay ditolak / offline
+                    if (widget.intent.errorMessage != null) ...[
+                      Container(
+                        padding: const EdgeInsets.all(14),
+                        margin: const EdgeInsets.only(bottom: 14),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFFFFBEB),
+                          border: Border.all(color: const Color(0xFFFDE68A)),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Row(
+                              children: [
+                                Icon(
+                                  Icons.warning_amber_rounded,
+                                  color: Color(0xFFB45309),
+                                  size: 20,
+                                ),
+                                SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    'Peringatan Kredensial MiomiPay',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      color: Color(0xFFB45309),
+                                      fontSize: 13,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 6),
+                            Text(
+                              'Server merespons: ${widget.intent.errorMessage}',
+                              style: const TextStyle(
+                                fontSize: 12,
+                                color: Color(0xFF92400E),
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            const Text(
+                              'Aplikasi dialihkan ke Simulasi Offline internal NusaPOS. Agar dapat diuji di Sandbox Simulator MiomiPay online, pastikan API Key berstatus "Active" di dashboard https://pg.miomidev.com.',
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: Color(0xFF78350F),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+
                     // Kartu Total Tagihan & Countdown
                     Card(
                       elevation: 0,
@@ -302,7 +395,6 @@ class _PaymentPageState extends State<PaymentPage> {
                               ).copyWith(fontWeight: FontWeight.w600),
                             ),
                             const SizedBox(height: 6),
-                            // Display style (PRD Section 14)
                             Text(
                               rupiah(widget.order.total),
                               style: AppTypography.display(
@@ -327,21 +419,45 @@ class _PaymentPageState extends State<PaymentPage> {
                                     color: Colors.white,
                                   ).copyWith(fontWeight: FontWeight.w600),
                                 ),
-                                const SizedBox(width: 8),
-                                Container(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 6,
-                                    vertical: 2,
-                                  ),
-                                  decoration: BoxDecoration(
-                                    color: Colors.white.withValues(alpha: 0.2),
-                                    borderRadius: BorderRadius.circular(6),
-                                  ),
-                                  child: Text(
-                                    widget.order.code,
-                                    style: AppTypography.caption(
-                                      color: Colors.white,
+                              ],
+                            ),
+                            const SizedBox(height: 10),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Flexible(
+                                  child: Container(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 8,
+                                      vertical: 4,
                                     ),
+                                    decoration: BoxDecoration(
+                                      color: Colors.white.withValues(
+                                        alpha: 0.2,
+                                      ),
+                                      borderRadius: BorderRadius.circular(6),
+                                    ),
+                                    child: Text(
+                                      invoiceCode,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: AppTypography.caption(
+                                        color: Colors.white,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                TextButton.icon(
+                                  onPressed: () => _copyText(
+                                    invoiceCode,
+                                    'Kode Invoice',
+                                  ),
+                                  icon: const Icon(Icons.copy_rounded, size: 16),
+                                  label: const Text('Salin'),
+                                  style: TextButton.styleFrom(
+                                    foregroundColor: Colors.white,
+                                    visualDensity: VisualDensity.compact,
                                   ),
                                 ),
                               ],
@@ -382,7 +498,9 @@ class _PaymentPageState extends State<PaymentPage> {
                             ),
                             const SizedBox(height: 4),
                             Text(
-                              'Mendukung GoPay, OVO, Dana, BCA, dan bank lainnya.',
+                              widget.intent.isSimulated
+                                  ? 'Mode Sandbox Simulator NusaPOS'
+                                  : 'Mendukung GoPay, OVO, Dana, BCA, dan bank lainnya.',
                               textAlign: TextAlign.center,
                               style: AppTypography.caption(),
                             ),
@@ -397,6 +515,29 @@ class _PaymentPageState extends State<PaymentPage> {
                               'ID Referensi: ${widget.intent.reference}',
                               style: AppTypography.caption(),
                             ),
+                            if (snapToken != null) ...[
+                              const SizedBox(height: 4),
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  Text(
+                                    'Token: $snapToken',
+                                    style: AppTypography.caption(
+                                      color: AppColors.textSecondary,
+                                    ),
+                                  ),
+                                  IconButton(
+                                    icon: const Icon(Icons.copy_rounded, size: 14),
+                                    visualDensity: VisualDensity.compact,
+                                    tooltip: 'Salin Snap Token',
+                                    onPressed: () => _copyText(
+                                      snapToken,
+                                      'Snap Token',
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
                           ],
                         ),
                       ),
@@ -441,11 +582,39 @@ class _PaymentPageState extends State<PaymentPage> {
                       const SizedBox(height: 14),
                     ],
 
-                    // Tombol Aksi
+                    // Tombol Buka Sandbox Simulator MiomiPay
+                    FilledButton.icon(
+                      onPressed: _openSimulator,
+                      icon: const Icon(
+                        Icons.bolt_rounded,
+                        color: Colors.black,
+                        size: 20,
+                      ),
+                      label: const Text(
+                        'Buka Simulator MiomiPay',
+                        style: TextStyle(
+                          color: Colors.black,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      style: FilledButton.styleFrom(
+                        backgroundColor: const Color(0xFFFFE600),
+                        foregroundColor: Colors.black,
+                        padding: const EdgeInsets.symmetric(vertical: 14),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          side: const BorderSide(color: Colors.black, width: 2),
+                        ),
+                        elevation: 0,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+
+                    // Tombol Aksi Simulasi Lokal (jika API offline / mode simulasi)
                     if (widget.intent.isSimulated) ...[
                       PrimaryButton(
-                        text: 'Simulasikan Pembayaran Berhasil',
-                        icon: Icons.bolt_rounded,
+                        text: 'Simulasikan Pembayaran Berhasil (Offline)',
+                        icon: Icons.check_circle_outline_rounded,
                         loading: _checking,
                         onPressed: (_checking || _expired)
                             ? null
@@ -582,10 +751,7 @@ class _QrPlaceholder extends StatelessWidget {
 /// - Ringkasan pesanan
 /// - Tombol primer: "Pesanan Baru" (kembali ke POS, reset keranjang)
 class _PaymentSuccessView extends StatelessWidget {
-  const _PaymentSuccessView({
-    required this.order,
-    required this.onNewOrder,
-  });
+  const _PaymentSuccessView({required this.order, required this.onNewOrder});
 
   final Order order;
   final VoidCallback onNewOrder;
@@ -654,24 +820,20 @@ class _PaymentSuccessView extends StatelessWidget {
                             ),
                           ),
                           const SizedBox(height: 4),
-                          Text(
-                            order.code,
-                            style: AppTypography.caption(),
-                          ),
+                          Text(order.code, style: AppTypography.caption()),
                           const Divider(height: 24),
                           _DetailRow(
                             label: 'Metode Pembayaran',
                             value: 'QRIS • MiomiPay',
                           ),
                           const SizedBox(height: 8),
-                          _DetailRow(
-                            label: 'Kasir',
-                            value: order.cashierName,
-                          ),
+                          _DetailRow(label: 'Kasir', value: order.cashierName),
                           const SizedBox(height: 8),
                           _DetailRow(
                             label: 'Waktu',
-                            value: dateTimeLabel(order.paidAt ?? DateTime.now()),
+                            value: dateTimeLabel(
+                              order.paidAt ?? DateTime.now(),
+                            ),
                           ),
                           const SizedBox(height: 8),
                           _DetailRow(
@@ -725,9 +887,9 @@ class _DetailRow extends StatelessWidget {
         Text(label, style: AppTypography.bodyM()),
         Text(
           value,
-          style: AppTypography.bodyM(color: AppColors.textPrimary).copyWith(
-            fontWeight: FontWeight.w600,
-          ),
+          style: AppTypography.bodyM(
+            color: AppColors.textPrimary,
+          ).copyWith(fontWeight: FontWeight.w600),
         ),
       ],
     );

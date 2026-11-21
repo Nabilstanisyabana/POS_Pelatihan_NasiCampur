@@ -145,7 +145,7 @@ class _CartPanelState extends State<CartPanel> {
     final cart = context.watch<CartController>();
 
     return Container(
-      clipBehavior: Clip.antiAlias,
+      clipBehavior: widget.inSheet ? Clip.none : Clip.antiAlias,
       decoration: widget.inSheet
           ? null
           : BoxDecoration(

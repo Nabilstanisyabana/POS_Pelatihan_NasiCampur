@@ -28,7 +28,9 @@ class AppConfig {
   static const String _firebaseApiKey = String.fromEnvironment(
     'FIREBASE_API_KEY',
   );
-  static const String _firebaseAppId = String.fromEnvironment('FIREBASE_APP_ID');
+  static const String _firebaseAppId = String.fromEnvironment(
+    'FIREBASE_APP_ID',
+  );
   static const String _firebaseProjectId = String.fromEnvironment(
     'FIREBASE_PROJECT_ID',
   );
@@ -82,11 +84,17 @@ class AppConfig {
   /// API Key MiomiPay (Prefix MP-SB- untuk Sandbox, MP-LIVE- untuk Produksi).
   static const String miomiPayApiKey = String.fromEnvironment(
     'MIOMIPAY_API_KEY',
+    defaultValue: 'MP-SB-znbzgIPJ6iCzkrsuFFFDGHMrKpWWhTMu',
+  );
+
+  static const bool miomiPayUseBackend = bool.fromEnvironment(
+    'MIOMIPAY_USE_BACKEND',
   );
 
   /// Webhook Secret untuk validasi HMAC-SHA256 signature.
   static const String miomiPayWebhookSecret = String.fromEnvironment(
     'MIOMIPAY_WEBHOOK_SECRET',
+    defaultValue: 'whsec_3fxQMMMINic7T2Mfy4jA25Y6J5yLdB9G',
   );
 
   static const String miomiPayCreatePath = String.fromEnvironment(
@@ -106,7 +114,8 @@ class AppConfig {
 
   /// Menentukan apakah MiomiPay sudah dikonfigurasi dengan API Key.
   /// Jika belum, aplikasi berjalan otomatis dalam mode Simulator Sandbox.
-  static bool get hasMiomiPayConfig => miomiPayApiKey.isNotEmpty;
+  static bool get hasMiomiPayConfig =>
+      miomiPayApiKey.isNotEmpty || miomiPayUseBackend;
 
   static String get createPaymentUrl =>
       '${_trimSlash(miomiPayBaseUrl)}$miomiPayCreatePath';

@@ -40,7 +40,10 @@ class AppServices {
         auth: FirebaseAuthService(),
         menus: FirestoreMenuService(),
         orders: FirestoreOrderService(),
-        payments: MiomiPayService(simulate: !AppConfig.hasMiomiPayConfig),
+        payments: MiomiPayService(
+          simulate: !AppConfig.hasMiomiPayConfig,
+          proxyOnly: AppConfig.miomiPayUseBackend,
+        ),
         demoMode: false,
         firebaseMessage: firebaseMessage,
       );
@@ -51,7 +54,10 @@ class AppServices {
       auth: DemoAuthService(store),
       menus: DemoMenuService(store),
       orders: DemoOrderService(store),
-      payments: MiomiPayService(simulate: true),
+      payments: MiomiPayService(
+        simulate: !AppConfig.hasMiomiPayConfig,
+        proxyOnly: AppConfig.miomiPayUseBackend,
+      ),
       demoMode: true,
       firebaseMessage: firebaseMessage,
     );
