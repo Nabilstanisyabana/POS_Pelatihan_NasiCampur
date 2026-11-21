@@ -10,16 +10,18 @@ import '../models/payment_intent.dart';
 /// Mendukung 3 mode:
 /// 1. Backend Proxy (http://localhost:3000/api/payment/create) - Bebas CORS & Aman
 /// 2. Direct API (https://pg.miomidev.com/api/v1/payment/create)
-/// 3. Sandbox Simulator Fallback (Jika API offline/CORS, otomatis muncul QR simulator)
+/// 3. Sandbox Simulator Fallback (Jika API offline/error, otomatis muncul QR simulasi dengan informasi error jelas)
 class MiomiPayService {
   MiomiPayService({
     bool? simulate,
+    this.proxyOnly = false,
     http.Client? client,
     this.timeout = const Duration(seconds: 15),
   }) : isSimulated = simulate ?? !AppConfig.hasMiomiPayConfig,
        _client = client ?? http.Client();
 
   final bool isSimulated;
+  final bool proxyOnly;
   final Duration timeout;
   final http.Client _client;
 
@@ -35,13 +37,13 @@ class MiomiPayService {
   }
 
   /// Membuat transaksi tagihan QRIS ke MiomiPay.
-  /// Jika terjadi kendala jaringan atau CORS pada Flutter Web,
-  /// otomatis dialihkan ke Sandbox Simulator agar pengujian kasir tidak terhenti.
   Future<PaymentIntent> createQrisPayment({required Order order}) async {
-    // 1. Jika mode simulasi aktif secara eksplisit
+    // 1. Jika mode simulasi aktif secara eksplisit (tidak ada API Key)
     if (isSimulated) {
       return _generateSimulatorIntent(order);
     }
+
+    String? lastError;
 
     // 2. Coba request via Backend Proxy (Express server.js) terlebih dahulu (Bebas CORS)
     try {
@@ -55,7 +57,8 @@ class MiomiPayService {
               'customer_name': 'Pelanggan - ${order.code}',
               'customer_email': 'kasir@nusapos.id',
               'customer_phone': '081234567890',
-              'description': 'Pembayaran POS ${order.code} - ${AppConfig.storeName}',
+              'description':
+                  'Pembayaran POS ${order.code} - ${AppConfig.storeName}',
               'success_redirect_url': AppConfig.miomiPaySuccessUrl,
             }),
           )
@@ -66,8 +69,20 @@ class MiomiPayService {
         final data = decoded['data'] ?? decoded;
         return _parseIntent(data, order, isSim: false);
       }
-    } catch (_) {
-      // Backend lokal tidak aktif, lanjutkan ke Direct API
+
+      final decoded = jsonDecode(backendResponse.body);
+      lastError = decoded['message']?.toString() ?? 'HTTP ${backendResponse.statusCode}';
+
+      if (proxyOnly) {
+        throw Exception('Backend MiomiPay gagal membuat tagihan: $lastError (HTTP ${backendResponse.statusCode}).');
+      }
+    } catch (e) {
+      if (proxyOnly) rethrow;
+      lastError = e.toString();
+    }
+
+    if (proxyOnly) {
+      throw Exception('Backend MiomiPay tidak mengembalikan tagihan: $lastError');
     }
 
     // 3. Coba Direct API ke https://pg.miomidev.com/api/v1/payment/create
@@ -99,38 +114,59 @@ class MiomiPayService {
         final data = decoded['data'] ?? decoded;
         return _parseIntent(data, order, isSim: false);
       } else {
+        final msg = decoded['message']?.toString() ?? 'HTTP ${response.statusCode}';
+        lastError = '$msg (HTTP ${response.statusCode})';
         debugPrint('[MiomiPay API Error] Status: ${response.statusCode}, Body: ${response.body}');
       }
     } catch (e) {
+      lastError = e.toString();
       debugPrint('[MiomiPay Direct Connection Error (CORS/Network)]: $e');
     }
 
-    // 4. Fallback ke Sandbox Simulator agar kasir tetap bisa melakukan simulasi pembayaran
-    return _generateSimulatorIntent(order);
+    // 4. Fallback ke Sandbox Simulator dengan pesan error yang jelas
+    return _generateSimulatorIntent(order, errorMessage: lastError);
   }
 
-  PaymentIntent _generateSimulatorIntent(Order order) {
+  PaymentIntent _generateSimulatorIntent(Order order, {String? errorMessage}) {
     return PaymentIntent(
       reference: 'MP-SB-SIM-${order.code}',
+      invoiceNumber: order.code,
+      snapToken: 'sim_${order.code}',
       status: 'pending',
       isSimulated: true,
+      errorMessage: errorMessage,
       qrString:
           '00020101021226660014ID.CO.GOPAY.WWW0118936009143000000000520458125303360540${order.total}5802ID5911${AppConfig.storeName}6007BANDUNG62190115${order.code}6304',
       expiresAt: DateTime.now().add(const Duration(minutes: 15)),
     );
   }
 
-  PaymentIntent _parseIntent(dynamic data, Order order, {required bool isSim}) {
+  PaymentIntent _parseIntent(dynamic data, Order order, {required bool isSim, String? errorMessage}) {
     final map = data is Map ? Map<String, dynamic>.from(data) : <String, dynamic>{};
     final reference = _stringOf(map, ['reference', 'reference_id', 'id'], fallback: order.code)!;
+    final invoiceNumber = _stringOf(map, ['invoice_number', 'invoice', 'external_id']) ?? order.code;
     final qrString = _stringOf(map, ['qr_string', 'qris', 'qr_code']);
     final qrImageUrl = _stringOf(map, ['qr_image_url', 'qr_url']);
     final checkoutUrl = _stringOf(map, ['checkout_url', 'payment_url', 'redirect_url']);
 
+    // Cari snap token jika ada di map atau ekstrak dari checkout_url / qr_image_url
+    String? snapToken = _stringOf(map, ['snap_token', 'token']);
+    if (snapToken == null && checkoutUrl != null) {
+      final match = RegExp(r'snap_[a-zA-Z0-9]+').firstMatch(checkoutUrl);
+      if (match != null) snapToken = match.group(0);
+    }
+    if (snapToken == null && qrImageUrl != null) {
+      final match = RegExp(r'snap_[a-zA-Z0-9]+').firstMatch(qrImageUrl);
+      if (match != null) snapToken = match.group(0);
+    }
+
     return PaymentIntent(
       reference: reference,
+      invoiceNumber: invoiceNumber,
+      snapToken: snapToken,
       status: (_stringOf(map, ['status']) ?? 'pending').toLowerCase(),
       isSimulated: isSim,
+      errorMessage: errorMessage,
       qrString: qrString,
       qrImageUrl: qrImageUrl,
       paymentUrl: checkoutUrl,
@@ -148,9 +184,9 @@ class MiomiPayService {
 
     // Coba via Backend Proxy
     try {
-      final backendRes = await _client.get(
-        Uri.parse('$_localBackendUrl/$reference/status'),
-      ).timeout(const Duration(seconds: 4));
+      final backendRes = await _client
+          .get(Uri.parse('$_localBackendUrl/$reference/status'))
+          .timeout(const Duration(seconds: 4));
 
       if (backendRes.statusCode == 200) {
         final decoded = jsonDecode(backendRes.body);
@@ -158,7 +194,18 @@ class MiomiPayService {
         final rawStatus = _stringOf(data, ['status', 'payment_status']) ?? 'pending';
         return rawStatus.toLowerCase();
       }
-    } catch (_) {}
+      if (proxyOnly) {
+        throw Exception('Backend MiomiPay gagal memeriksa status (HTTP ${backendRes.statusCode}).');
+      }
+    } catch (error) {
+      if (proxyOnly) {
+        throw Exception('Gagal memeriksa status via backend: $error');
+      }
+    }
+
+    if (proxyOnly) {
+      throw Exception('Backend MiomiPay tidak mengembalikan status.');
+    }
 
     // Coba Direct API
     try {
